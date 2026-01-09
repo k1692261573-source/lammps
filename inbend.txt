@@ -1,0 +1,97 @@
+#KNO bending test  20211204 (new polarization)
+# ---------------------------------- Initialize Simulation -----------------------------
+atom_style           full
+units		         metal
+boundary             s p s
+atom_modify	         map array sort 0 0.0
+# ------------------ -------------------- Create Atoms -----------------------------------
+read_data	         data.LiONb-229
+variable	         coreid atom id
+variable	         shellid atom id-8100
+set		             atom 1*4050 mol v_coreid
+set		             atom 4051*8100 mol v_shellid
+ 
+group	             shells id 4051:8100
+group		         cores subtract all shells
+ 
+displace_atoms       shells random 0.01 0.01 0.01 41865936 units box
+
+# ------------------------------------ Create Regions -----------------------------------
+
+region               bto_fixed1    block   0.0      15.4336   0  8.91057  0  11.2918 units box # 0  5  0 10 0 10 units lattice #
+region               bto_middle    block   0.0      15.4336   0  8.91057  11.2918  115.347 units box # 5  50 0 10 0 10 units lattice #
+region               bto_fixed2    block   0.0      15.4336   0  8.91057  115.347  125.347 units box # 50 54 0 10 0 10 units lattice #
+region               bto_mobile    union   2 bto_middle bto_fixed2   
+region               bto_total     union   3 bto_middle bto_fixed1 bto_fixed2
+
+group                r_bto_fixed1  region bto_fixed1
+group                r_bto_middle  region bto_middle
+group                r_bto_fixed2  region bto_fixed2
+group                r_bto_mobile  region bto_mobile
+group                r_bto_total   region bto_total
+
+#------------------------------------ potential ------------------------------
+pair_style  born/coul/wolf 0.25 10.0 10.0
+#                       A           rho       C
+pair_coeff      * *       0.00     1.0000    0.0      0.0    0.0
+pair_coeff      1 5      816.3     0.26086   0.0      0.0    0.0     # Li-O
+pair_coeff      2 5    1113.3      0.38815   0.0      0.0    0.0     # Nb-O
+pair_coeff      5 5    22764.3     0.149     0.0    27.879   0.0     # O-O
+
+bond_style class2
+#                    R0     K2 / 2      K3       K4 / 24 
+bond_coeff      1    0.0    10000     0.0000    10000    # Li   core-shell 
+bond_coeff      2    0.0    8.925        0.0000   4166.67    # Nb   core-shell 
+bond_coeff      3    0.0    231.02       0.0000   4166.67    # O   core-shell 
+
+special_bonds coul 0 1 1 # Coulomb potential inactive between an atom core-shell
+
+#------------------------------------ neighbor -------------------------------
+neighbor	         1.5 bin #核心优化：扩大邻居半径+关闭过度检查，防止成键原子丢失
+neigh_modify         every 1 delay 0 check yes
+#---------------------------------- Equilibration ----------------------------
+velocity             r_bto_total create 300 12345 mom yes rot no 
+#---------------------------------- minimize--------------------------------------------
+min_style	         cg
+minimize	         1e-4 1e-6 20000 40000
+#---------------------------------Dipole-------------------------------------------------
+variable             chunkID atom 1
+compute              mychunk all chunk/atom v_chunkID nchunk once ids once
+compute              dipole all dipole/chunk mychunk
+variable             dipole_x equal c_dipole[1][1]
+variable             dipole_y equal c_dipole[1][2]
+variable             dipole_z equal c_dipole[1][3]
+# --------------------------------- Define Compute -------------------------------------
+compute              d_atom all displace/atom
+#--------------------------Thermo information shows--------------------------------------
+thermo_style         custom step temp etotal ke pe cella cellb cellc cellalpha cellbeta cellgamma vol press v_dipole_x v_dipole_y v_dipole_z 
+#---------------------------------------Display thermo-------------------------
+timestep	         0.0001
+thermo	             500
+fix		             1 r_bto_total npt temp 300 300 0.04  y 0 0 0.04
+dump                 1 all custom 500 dumps/stab1_*.txt id type x y z q c_d_atom[1] c_d_atom[2] c_d_atom[3] c_d_atom[4]
+run		             2000
+unfix                1
+undump               1
+#-------------------------------------bending-----------------------------------
+reset_timestep       0
+timestep	         0.0004
+fix                  2 r_bto_fixed1 setforce  NULL  NULL NULL
+fix                  3 r_bto_fixed2 addforce  0.007  0  0 
+fix                  4 r_bto_mobile nve 
+fix                  5 all temp/berendsen 300.0 300.0 0.04
+thermo	             500
+
+compute              mychunk_efield all chunk/atom v_chunkID nchunk once ids once
+compute              dipole_efield all dipole/chunk mychunk_efield
+variable             dipole_x equal c_dipole_efield[1][1]
+variable             dipole_y equal c_dipole_efield[1][2]
+variable             dipole_z equal c_dipole_efield[1][3]
+
+fix                  dipole_output all ave/time 25 10 2500   v_dipole_x v_dipole_y v_dipole_z file dipole_data.dat
+dump                 2 all custom 500 dumps/stab2_*.txt id type x y z q c_d_atom[1] c_d_atom[2] c_d_atom[3] c_d_atom[4]
+run		             150000
+unfix                2
+unfix                3
+unfix                4
+undump               2
